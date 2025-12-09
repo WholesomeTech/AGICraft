@@ -1,4 +1,5 @@
 import { BlockType, CHUNK_SIZE, CHUNK_HEIGHT, Face, BLOCK_COLORS, FACE_NORMALS, CUBE_VERTICES } from './types.js';
+import { SimplexNoise } from './noise.js';
 
 /**
  * Represents a chunk of voxel data with greedy meshing
@@ -8,6 +9,7 @@ export class Chunk {
     vertices: Float32Array | null = null;
     vertexCount: number = 0;
     isDirty: boolean = true;
+    private static noise = new SimplexNoise();
 
     constructor(public x: number, public z: number) {
         // Initialize block data (flattened 3D array)
@@ -39,37 +41,76 @@ export class Chunk {
     }
 
     /**
-     * Generate simple terrain
+     * Generate terrain with caves and ores
      */
     generate(): void {
         for (let x = 0; x < CHUNK_SIZE; x++) {
             for (let z = 0; z < CHUNK_SIZE; z++) {
-                // Simple height map
                 const worldX = this.x * CHUNK_SIZE + x;
                 const worldZ = this.z * CHUNK_SIZE + z;
-                const height = Math.floor(8 + Math.sin(worldX * 0.1) * 3 + Math.cos(worldZ * 0.1) * 3);
+                
+                // Base terrain height (simple 2D noise approximation)
+                // Use the 3D noise function at y=0 or simple math for 2D heightmap
+                // Scale coordinate for noise
+                const scale = 0.02;
+                const hNoise = Chunk.noise.noise3D(worldX * scale, 0, worldZ * scale); 
+                const height = Math.floor(32 + hNoise * 10); // Base height around 32, variation +/- 10
                 
                 for (let y = 0; y < CHUNK_HEIGHT; y++) {
+                    // Cave generation using 3D noise
+                    // If noise value is below a threshold, it's a cave (AIR)
+                    const caveScale = 0.05;
+                    const caveNoise = Chunk.noise.noise3D(worldX * caveScale, y * caveScale, worldZ * caveScale);
+                    const isCave = caveNoise < -0.3; // Threshold for caves
+
                     let blockType = BlockType.AIR;
-                    
-                    if (y < height - 3) {
-                        blockType = BlockType.STONE;
-                    } else if (y < height - 1) {
-                        blockType = BlockType.DIRT;
-                    } else if (y === height - 1) {
-                        blockType = BlockType.GRASS;
+
+                    if (!isCave) {
+                        if (y <= height) {
+                            if (y === height) {
+                                blockType = BlockType.GRASS;
+                            } else if (y > height - 4) {
+                                blockType = BlockType.DIRT;
+                            } else {
+                                blockType = BlockType.STONE;
+                                
+                                // Ores
+                                if (Math.random() < 0.05) blockType = BlockType.COAL_ORE;
+                                else if (y < 20 && Math.random() < 0.03) blockType = BlockType.IRON_ORE;
+                                else if (y < 10 && Math.random() < 0.01) blockType = BlockType.DIAMOND_ORE;
+                            }
+                        } else if (y === height + 1 && Math.random() < 0.005) {
+                            // Simple Trees (just a log for now, full tree generation requires neighbor access or multi-pass)
+                            // blockType = BlockType.WOOD; 
+                            // Let's create a simple 1-block stump to indicate tree for now
+                            // Properly generating trees across chunk boundaries is complex.
+                             this.generateSimpleTree(x, y, z);
+                        }
                     }
                     
-                    // Set block directly without marking dirty during generation
-                    if (x >= 0 && x < CHUNK_SIZE && y >= 0 && y < CHUNK_HEIGHT && z >= 0 && z < CHUNK_SIZE) {
-                        const index = x + z * CHUNK_SIZE + y * CHUNK_SIZE * CHUNK_SIZE;
-                        this.blocks[index] = blockType;
+                    if (blockType !== BlockType.AIR) {
+                        this.setBlock(x, y, z, blockType);
                     }
                 }
             }
         }
-        // Mark dirty once at the end
         this.isDirty = true;
+    }
+
+    private generateSimpleTree(x: number, y: number, z: number) {
+        // Simple "tree": 3 blocks of wood, some leaves on top
+        // Careful with bounds checks!
+        for (let i = 0; i < 4; i++) {
+             this.setBlock(x, y + i, z, BlockType.WOOD);
+        }
+        // Leaves
+        for (let lx = -1; lx <= 1; lx++) {
+            for (let lz = -1; lz <= 1; lz++) {
+                 this.setBlock(x + lx, y + 3, z + lz, BlockType.LEAVES);
+                 this.setBlock(x + lx, y + 4, z + lz, BlockType.LEAVES);
+            }
+        }
+        this.setBlock(x, y + 5, z, BlockType.LEAVES);
     }
 
     /**

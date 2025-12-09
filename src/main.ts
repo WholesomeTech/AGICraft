@@ -4,11 +4,13 @@ import { Vec3, Mat4 } from './math.js';
 import { BlockType, CHUNK_SIZE, CHUNK_HEIGHT } from './types.js';
 import { Player, World } from './player.js';
 import { TOON } from './toon.js';
+import { CraftingSystem } from './recipes.js';
 
 enum GameState {
     MENU,
     PLAYING,
-    PAUSED
+    PAUSED,
+    INVENTORY
 }
 
 /**
@@ -35,12 +37,18 @@ class Game implements World {
     // Persistence for infinite world (Coordinate -> BlockType)
     private modifiedBlocks: Map<string, BlockType> = new Map();
 
+    // Crafting State
+    private craftingGrid: (BlockType | null)[] = [null, null, null, null];
+    private craftingOutput: BlockType | null = null;
+    private heldItem: BlockType | null = null; // Mouse cursor item
+
     // UI Elements
     private ui = {
         screens: {
             main: document.getElementById('main-menu'),
             pause: document.getElementById('pause-menu'),
             settings: document.getElementById('settings-menu'),
+            inventory: document.getElementById('inventory-menu'),
             hud: document.getElementById('ui-layer')
         },
         hud: {
@@ -48,6 +56,12 @@ class Game implements World {
             food: document.getElementById('food-container'),
             xp: document.getElementById('xp-bar-fill'),
             hotbar: document.getElementById('hotbar')
+        },
+        inventory: {
+            main: document.getElementById('main-inventory-grid'),
+            hotbar: document.getElementById('hotbar-inventory-grid'),
+            crafting: document.getElementById('crafting-grid'),
+            output: document.getElementById('crafting-output')
         },
         inputs: {
             renderDistance: document.getElementById('render-distance') as HTMLInputElement,
@@ -101,6 +115,10 @@ class Game implements World {
         } else if (newState === GameState.PAUSED) {
             this.ui.screens.pause?.classList.remove('hidden');
             this.ui.screens.hud?.classList.remove('hidden'); // Keep HUD visible underneath
+            this.exitPointerLock();
+        } else if (newState === GameState.INVENTORY) {
+            this.ui.screens.inventory?.classList.remove('hidden');
+            this.updateInventoryUI();
             this.exitPointerLock();
         }
     }
@@ -198,7 +216,8 @@ class Game implements World {
                     food: this.player.food,
                     xp: this.player.xp
                 },
-                inventory: this.player.hotbar
+                inventory: this.player.inventory,
+                hotbar: this.player.hotbar
             },
             modifiedBlocks: Array.from(this.modifiedBlocks.entries()), // Serialize Map
             settings: this.settings
@@ -216,7 +235,8 @@ class Game implements World {
             this.player.health = data.player.stats.health;
             this.player.food = data.player.stats.food;
             this.player.xp = data.player.stats.xp;
-            this.player.hotbar = data.player.inventory;
+            this.player.inventory = data.player.inventory || new Array(27).fill(BlockType.AIR);
+            this.player.hotbar = data.player.hotbar;
             
             // World
             this.modifiedBlocks = new Map(data.modifiedBlocks);
@@ -369,9 +389,98 @@ class Game implements World {
         this.player.hotbar.forEach((block, index) => {
             const slot = document.createElement('div');
             slot.className = `slot ${index === this.player.selectedSlot ? 'active' : ''}`;
-            slot.textContent = BlockType[block].substring(0, 3);
+            slot.textContent = block !== BlockType.AIR ? BlockType[block].substring(0, 3) : '';
             this.ui.hud.hotbar?.appendChild(slot);
         });
+    }
+
+    // --- Inventory UI & Logic ---
+
+    private updateInventoryUI() {
+        const createSlot = (item: BlockType, onClick: () => void) => {
+            const div = document.createElement('div');
+            div.className = 'slot';
+            if (item !== BlockType.AIR) {
+                div.textContent = BlockType[item].substring(0, 3);
+            }
+            div.onclick = onClick;
+            return div;
+        };
+
+        // Main Inventory (27 slots)
+        if (this.ui.inventory.main) {
+            this.ui.inventory.main.innerHTML = '';
+            this.player.inventory.forEach((item, i) => {
+                this.ui.inventory.main?.appendChild(createSlot(item, () => {
+                    // Simple swap with held item (not implemented fully for drag/drop, just click to swap)
+                    // For prototype: click to delete/debug or just view
+                }));
+            });
+        }
+
+        // Hotbar in Inventory
+        if (this.ui.inventory.hotbar) {
+            this.ui.inventory.hotbar.innerHTML = '';
+            this.player.hotbar.forEach((item, i) => {
+                this.ui.inventory.hotbar?.appendChild(createSlot(item, () => {}));
+            });
+        }
+
+        // Crafting Grid
+        if (this.ui.inventory.crafting) {
+            const slots = this.ui.inventory.crafting.children;
+            for (let i = 0; i < 4; i++) {
+                const slot = slots[i] as HTMLElement;
+                const item = this.craftingGrid[i];
+                slot.textContent = item ? BlockType[item].substring(0, 3) : '';
+                slot.onclick = () => {
+                    // Cycle through some items for testing crafting if empty, or clear
+                    // In a real game, this would interact with "held item"
+                    if (this.craftingGrid[i] === null) {
+                         this.craftingGrid[i] = BlockType.WOOD; // Debug: Click to add wood
+                    } else {
+                        this.craftingGrid[i] = null;
+                    }
+                    this.checkCrafting();
+                    this.updateInventoryUI(); // Redraw
+                };
+            }
+        }
+        
+        // Crafting Output
+        if (this.ui.inventory.output) {
+             const out = this.ui.inventory.output;
+             out.textContent = this.craftingOutput ? BlockType[this.craftingOutput].substring(0, 3) : '';
+             out.onclick = () => {
+                 if (this.craftingOutput) {
+                     // Craft!
+                     // Add to inventory (find first empty slot)
+                     const emptyIdx = this.player.hotbar.indexOf(BlockType.AIR);
+                     if (emptyIdx !== -1) {
+                         this.player.hotbar[emptyIdx] = this.craftingOutput;
+                     } else {
+                          const invIdx = this.player.inventory.indexOf(BlockType.AIR);
+                          if (invIdx !== -1) this.player.inventory[invIdx] = this.craftingOutput;
+                     }
+                     
+                     // Consume inputs
+                     // (For now, simple consumption)
+                     this.craftingGrid = [null, null, null, null];
+                     this.craftingOutput = null;
+                     this.updateInventoryUI();
+                     this.updateHUD(); // Update hotbar
+                 }
+             };
+        }
+    }
+
+    private checkCrafting() {
+        const recipe = CraftingSystem.checkRecipe(this.craftingGrid);
+        if (recipe) {
+            this.craftingOutput = recipe.output;
+        } else {
+            this.craftingOutput = null;
+        }
     }
 
     private setupUIListeners() {
@@ -431,15 +540,21 @@ class Game implements World {
         window.addEventListener('keydown', (e) => {
             if (this.state === GameState.PLAYING) {
                 if (e.key === 'Escape') {
-                    // Handled by pointerlockchange mostly, but redundant check ok
+                    // Handled by pointerlockchange
+                } else if (e.key.toLowerCase() === 'e') {
+                     this.setGameState(GameState.INVENTORY);
                 } else if (['1','2','3','4','5','6','7','8','9'].includes(e.key)) {
-                     this.keys.add(e.key); // Pass to player for update logic
+                     this.keys.add(e.key); // Pass to player
                      setTimeout(() => this.updateHotbarUI(), 0);
                 } else {
                     this.keys.add(e.key.toLowerCase());
                 }
             } else if (this.state === GameState.PAUSED) {
                 if (e.key === 'Escape') {
+                    this.setGameState(GameState.PLAYING);
+                }
+            } else if (this.state === GameState.INVENTORY) {
+                if (e.key === 'Escape' || e.key.toLowerCase() === 'e') {
                     this.setGameState(GameState.PLAYING);
                 }
             }
@@ -477,10 +592,12 @@ class Game implements World {
 
         if (hit) {
             if (button === 0) { // Left: Break
+                // Add item to inventory?
+                // For prototype: just delete
                 this.setBlock(hit.position.x, hit.position.y, hit.position.z, BlockType.AIR);
             } else if (button === 2) { // Right: Place
                 const placePos = Vec3.add(hit.position, hit.normal);
-                // Simple collision check against player
+                // Simple collision check
                 const playerPos = this.player.position;
                 const minX = playerPos.x - 0.3;
                 const maxX = playerPos.x + 0.3;

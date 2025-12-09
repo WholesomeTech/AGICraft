@@ -34,13 +34,14 @@ export class Player {
         BlockType.STONE, 
         BlockType.DIRT, 
         BlockType.GRASS, 
-        BlockType.STONE, // Placeholder for other blocks
-        BlockType.DIRT, 
-        BlockType.GRASS,
-        BlockType.STONE,
-        BlockType.DIRT,
-        BlockType.GRASS
+        BlockType.WOOD,
+        BlockType.PLANKS,
+        BlockType.CRAFTING_TABLE,
+        BlockType.FURNACE,
+        BlockType.COAL_ORE,
+        BlockType.IRON_ORE
     ];
+    inventory: BlockType[] = new Array(27).fill(BlockType.AIR);
     selectedSlot: number = 0;
     
     // Constants
