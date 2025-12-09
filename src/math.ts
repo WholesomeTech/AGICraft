@@ -21,8 +21,10 @@ export class Vec3 {
     }
 
     static normalize(v: Vec3): Vec3 {
-        const len = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-        return len > 0 ? new Vec3(v.x / len, v.y / len, v.z / len) : new Vec3();
+        const lenSq = v.x * v.x + v.y * v.y + v.z * v.z;
+        if (lenSq === 0) return new Vec3();
+        const len = Math.sqrt(lenSq);
+        return new Vec3(v.x / len, v.y / len, v.z / len);
     }
 
     static cross(a: Vec3, b: Vec3): Vec3 {

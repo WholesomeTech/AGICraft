@@ -60,10 +60,16 @@ export class Chunk {
                         blockType = BlockType.GRASS;
                     }
                     
-                    this.setBlock(x, y, z, blockType);
+                    // Set block directly without marking dirty during generation
+                    if (x >= 0 && x < CHUNK_SIZE && y >= 0 && y < CHUNK_HEIGHT && z >= 0 && z < CHUNK_SIZE) {
+                        const index = x + z * CHUNK_SIZE + y * CHUNK_SIZE * CHUNK_SIZE;
+                        this.blocks[index] = blockType;
+                    }
                 }
             }
         }
+        // Mark dirty once at the end
+        this.isDirty = true;
     }
 
     /**

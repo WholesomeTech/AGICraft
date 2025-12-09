@@ -174,7 +174,8 @@ export class Renderer {
             usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
         });
 
-        this.device.queue.writeBuffer(buffer, 0, chunk.vertices as BufferSource);
+        // Safe write with proper type
+        this.device.queue.writeBuffer(buffer, 0, chunk.vertices.buffer, chunk.vertices.byteOffset, chunk.vertices.byteLength);
         
         this.chunkBuffers.set(key, buffer);
         this.chunkVertexCounts.set(key, chunk.vertexCount);
@@ -186,7 +187,7 @@ export class Renderer {
     render(camera: Camera, chunks: Chunk[]): void {
         // Update uniform buffer with view-projection matrix
         const vpMatrix = camera.getViewProjectionMatrix();
-        this.device.queue.writeBuffer(this.uniformBuffer, 0, vpMatrix.data as BufferSource);
+        this.device.queue.writeBuffer(this.uniformBuffer, 0, vpMatrix.data.buffer, vpMatrix.data.byteOffset, vpMatrix.data.byteLength);
 
         // Update chunk meshes if dirty
         for (const chunk of chunks) {
