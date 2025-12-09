@@ -67,4 +67,25 @@ export class TOON {
     static exists(key: string): boolean {
         return localStorage.getItem(TOON.STORAGE_PREFIX + key) !== null;
     }
+
+    /**
+     * Delete data from local storage
+     */
+    static delete(key: string): void {
+        localStorage.removeItem(TOON.STORAGE_PREFIX + key);
+    }
+
+    /**
+     * Get list of all save keys
+     */
+    static getSaves(): string[] {
+        const saves: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith(TOON.STORAGE_PREFIX)) {
+                saves.push(key.substring(TOON.STORAGE_PREFIX.length));
+            }
+        }
+        return saves;
+    }
 }

@@ -1,10 +1,15 @@
-import { Camera } from './camera.js';
 import { Chunk } from './chunk.js';
 import { Renderer } from './renderer.js';
 import { Vec3, Mat4 } from './math.js';
 import { BlockType, CHUNK_SIZE, CHUNK_HEIGHT } from './types.js';
 import { Player, World } from './player.js';
 import { TOON } from './toon.js';
+
+enum GameState {
+    MENU,
+    PLAYING,
+    PAUSED
+}
 
 /**
  * Main application class
@@ -15,149 +20,261 @@ class Game implements World {
     private chunks: Map<string, Chunk> = new Map();
     private player: Player;
     
+    // Game State
+    private state: GameState = GameState.MENU;
+    private currentWorldId: string = 'world_default';
     private lastTime: number = 0;
     private isPointerLocked: boolean = false;
     private keys: Set<string> = new Set();
     
+    // Settings
+    private settings = {
+        renderDistance: 4
+    };
+
+    // Persistence for infinite world (Coordinate -> BlockType)
+    private modifiedBlocks: Map<string, BlockType> = new Map();
+
     // UI Elements
     private ui = {
-        health: document.getElementById('health-container'),
-        food: document.getElementById('food-container'),
-        xp: document.getElementById('xp-bar-fill'),
-        hotbar: document.getElementById('hotbar')
+        screens: {
+            main: document.getElementById('main-menu'),
+            pause: document.getElementById('pause-menu'),
+            settings: document.getElementById('settings-menu'),
+            hud: document.getElementById('ui-layer')
+        },
+        hud: {
+            health: document.getElementById('health-container'),
+            food: document.getElementById('food-container'),
+            xp: document.getElementById('xp-bar-fill'),
+            hotbar: document.getElementById('hotbar')
+        },
+        inputs: {
+            renderDistance: document.getElementById('render-distance') as HTMLInputElement,
+            renderDistanceVal: document.getElementById('val-render-distance'),
+            newWorldName: document.getElementById('new-world-name') as HTMLInputElement,
+            worldList: document.getElementById('world-list')
+        }
     };
     
     constructor() {
         this.canvas = document.getElementById('canvas') as HTMLCanvasElement;
-        if (!this.canvas) {
-            throw new Error('Canvas element not found');
-        }
+        if (!this.canvas) throw new Error('Canvas element not found');
         
-        // Set initial canvas size
         this.resizeCanvas();
-        
-        // Initialize renderer
         this.renderer = new Renderer(this.canvas);
         
-        // Initialize player
-        this.player = new Player(
-            new Vec3(0, 50, 0), // Start high up to fall
-            this.canvas.width / this.canvas.height
-        );
+        // Initialize player high up
+        this.player = new Player(new Vec3(0, 50, 0), this.canvas.width / this.canvas.height);
         
-        // Setup event listeners
         this.setupEventListeners();
-        
-        // Initialize UI
-        this.initUI();
+        this.setupUIListeners();
+        this.refreshWorldList();
     }
 
-    /**
-     * Initialize UI elements
-     */
-    private initUI(): void {
-        this.updateStatsUI();
-        this.updateHotbarUI();
-    }
-
-    private updateStatsUI(): void {
-        if (this.ui.health) {
-            this.ui.health.innerHTML = '';
-            const hearts = Math.ceil(this.player.health / 2);
-            for (let i = 0; i < 10; i++) {
-                const heart = document.createElement('div');
-                heart.className = 'heart';
-                if (i >= hearts) heart.style.opacity = '0.2';
-                this.ui.health.appendChild(heart);
-            }
-        }
-        
-        if (this.ui.food) {
-            this.ui.food.innerHTML = '';
-            const food = Math.ceil(this.player.food / 2);
-            for (let i = 0; i < 10; i++) {
-                const drumstick = document.createElement('div');
-                drumstick.className = 'food';
-                if (i >= food) drumstick.style.opacity = '0.2';
-                this.ui.food.appendChild(drumstick);
-            }
-        }
-        
-        if (this.ui.xp) {
-            this.ui.xp.style.width = `${this.player.xp}%`;
-        }
-    }
-
-    private updateHotbarUI(): void {
-        if (!this.ui.hotbar) return;
-        this.ui.hotbar.innerHTML = '';
-        
-        this.player.hotbar.forEach((block, index) => {
-            const slot = document.createElement('div');
-            slot.className = `slot ${index === this.player.selectedSlot ? 'active' : ''}`;
-            slot.textContent = BlockType[block].substring(0, 3); // Abbreviate
-            this.ui.hotbar?.appendChild(slot);
-        });
-    }
-
-    /**
-     * Initialize the game
-     */
     async init(): Promise<void> {
         try {
             await this.renderer.init();
-            
-            // Try load last save
-            if (TOON.exists('world')) {
-                console.log('Found save data, use P to load.');
-            }
-
-            // Generate initial chunks
-            this.generateChunks();
-            
-            // Start game loop
+            // Start loop (will handle menu logic)
             this.lastTime = performance.now();
             requestAnimationFrame((time) => this.gameLoop(time));
-            
-            console.log('Game initialized successfully');
+            console.log('Game initialized');
         } catch (error) {
-            this.showError(`Initialization failed: ${error}`);
-            throw error;
+            console.error(error);
         }
     }
 
-    /**
-     * Generate chunks around origin
-     */
-    private generateChunks(): void {
-        const renderDistance = 4;
+    // --- State Management ---
+
+    private setGameState(newState: GameState) {
+        this.state = newState;
         
-        for (let x = -renderDistance; x <= renderDistance; x++) {
-            for (let z = -renderDistance; z <= renderDistance; z++) {
-                const chunk = new Chunk(x, z);
-                this.chunks.set(`${x},${z}`, chunk);
+        // Hide all screens first
+        Object.values(this.ui.screens).forEach(el => el?.classList.add('hidden'));
+
+        if (newState === GameState.MENU) {
+            this.ui.screens.main?.classList.remove('hidden');
+            this.exitPointerLock();
+        } else if (newState === GameState.PLAYING) {
+            this.ui.screens.hud?.classList.remove('hidden');
+            this.requestPointerLock();
+        } else if (newState === GameState.PAUSED) {
+            this.ui.screens.pause?.classList.remove('hidden');
+            this.ui.screens.hud?.classList.remove('hidden'); // Keep HUD visible underneath
+            this.exitPointerLock();
+        }
+    }
+
+    private openSettings(fromMenu: boolean) {
+        this.ui.screens.main?.classList.add('hidden');
+        this.ui.screens.pause?.classList.add('hidden');
+        this.ui.screens.settings?.classList.remove('hidden');
+        
+        // Store return path
+        (this.ui.screens.settings as any)._returnState = fromMenu ? GameState.MENU : GameState.PAUSED;
+    }
+
+    private closeSettings() {
+        const returnState = (this.ui.screens.settings as any)._returnState || GameState.MENU;
+        this.setGameState(returnState);
+    }
+
+    // --- Infinite World Generation ---
+
+    private updateChunks() {
+        const px = Math.floor(this.player.position.x / CHUNK_SIZE);
+        const pz = Math.floor(this.player.position.z / CHUNK_SIZE);
+        const dist = this.settings.renderDistance;
+
+        const neededChunks = new Set<string>();
+
+        // Identify needed chunks
+        for (let x = -dist; x <= dist; x++) {
+            for (let z = -dist; z <= dist; z++) {
+                // Circular render distance check
+                if (x*x + z*z > dist*dist) continue;
+                neededChunks.add(`${px + x},${pz + z}`);
+            }
+        }
+
+        // Unload far chunks
+        for (const key of this.chunks.keys()) {
+            if (!neededChunks.has(key)) {
+                this.chunks.delete(key);
+                // Renderer cleanup would happen here if we tracked buffers per key strictly
+                // For now, simpler map usage
+            }
+        }
+
+        // Load new chunks
+        let chunksModified = false;
+        for (const key of neededChunks) {
+            if (!this.chunks.has(key)) {
+                const [cx, cz] = key.split(',').map(Number);
+                const chunk = new Chunk(cx, cz);
+                
+                // Apply modifications (infinite world persistence)
+                this.applyModificationsToChunk(chunk);
+                
+                chunk.buildMesh();
+                this.chunks.set(key, chunk);
+                this.renderer.updateChunk(chunk); // Upload to GPU
+                chunksModified = true;
             }
         }
     }
 
-    /**
-     * Get chunk at chunk coordinates
-     */
-    private getChunk(cx: number, cz: number): Chunk | undefined {
-        return this.chunks.get(`${cx},${cz}`);
+    private applyModificationsToChunk(chunk: Chunk) {
+        // This is O(N) where N is total modified blocks. 
+        // Optimized: Store modified blocks by chunk key in a separate mapMap.
+        // For prototype, simple iteration is okay or coordinate check.
+        const startX = chunk.x * CHUNK_SIZE;
+        const startZ = chunk.z * CHUNK_SIZE;
+        
+        // Iterate only modified blocks (better optimization required for massive worlds)
+        // For now, we will just check if any modified block belongs to this chunk
+        this.modifiedBlocks.forEach((type, key) => {
+            const [x, y, z] = key.split(',').map(Number);
+            if (x >= startX && x < startX + CHUNK_SIZE &&
+                z >= startZ && z < startZ + CHUNK_SIZE) {
+                // Convert to local
+                const lx = x - startX;
+                const lz = z - startZ;
+                chunk.setBlock(lx, y, lz, type);
+            }
+        });
+        
+        // Since we modified via setBlock (which sets dirty), we need to ensure mesh is built
     }
 
-    /**
-     * Get block at world coordinates (World Interface)
-     */
+    // --- Persistence (TOON) ---
+
+    private saveGame() {
+        const data = {
+            player: {
+                position: this.player.position,
+                stats: {
+                    health: this.player.health,
+                    food: this.player.food,
+                    xp: this.player.xp
+                },
+                inventory: this.player.hotbar
+            },
+            modifiedBlocks: Array.from(this.modifiedBlocks.entries()), // Serialize Map
+            settings: this.settings
+        };
+        TOON.save(this.currentWorldId, data);
+        console.log('Game Saved');
+    }
+
+    private loadGame(worldId: string) {
+        const data = TOON.load<any>(worldId);
+        if (data) {
+            this.currentWorldId = worldId;
+            // Player
+            this.player.position = new Vec3(data.player.position.x, data.player.position.y, data.player.position.z);
+            this.player.health = data.player.stats.health;
+            this.player.food = data.player.stats.food;
+            this.player.xp = data.player.stats.xp;
+            this.player.hotbar = data.player.inventory;
+            
+            // World
+            this.modifiedBlocks = new Map(data.modifiedBlocks);
+            this.chunks.clear(); // Force regeneration with mods
+            
+            // Settings
+            if (data.settings) {
+                this.settings = data.settings;
+                this.updateSettingsUI();
+            }
+
+            this.updateHUD();
+            this.setGameState(GameState.PLAYING);
+        } else {
+            console.error('Save not found');
+        }
+    }
+
+    private createWorld(name: string) {
+        this.currentWorldId = 'world_' + name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+        this.chunks.clear();
+        this.modifiedBlocks.clear();
+        this.player = new Player(new Vec3(0, 50, 0), this.canvas.width / this.canvas.height);
+        this.settings.renderDistance = 4;
+        
+        this.updateHUD();
+        this.setGameState(GameState.PLAYING);
+    }
+
+    // --- Core Loops ---
+
+    private gameLoop(currentTime: number): void {
+        const deltaTime = Math.min((currentTime - this.lastTime) / 1000, 0.1);
+        this.lastTime = currentTime;
+
+        if (this.state === GameState.PLAYING) {
+            // Update Logic
+            this.player.update(deltaTime, this, this.keys);
+            this.updateChunks();
+        }
+
+        // Render (always render if possible, even if paused)
+        // If paused, maybe apply a darkening filter or just stop updates
+        this.renderer.render(this.player.camera, Array.from(this.chunks.values()));
+
+        requestAnimationFrame((time) => this.gameLoop(time));
+    }
+
+    // --- World Interface ---
+
     getBlock(x: number, y: number, z: number): BlockType {
         if (y < 0 || y >= CHUNK_HEIGHT) return BlockType.AIR;
         
         const cx = Math.floor(x / CHUNK_SIZE);
         const cz = Math.floor(z / CHUNK_SIZE);
-        const chunk = this.getChunk(cx, cz);
+        const chunk = this.chunks.get(`${cx},${cz}`);
         
-        if (!chunk) return BlockType.AIR;
+        if (!chunk) return BlockType.AIR; // Treat unloaded chunks as air (or void)
         
         const lx = (x % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
         const lz = (z % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
@@ -165,31 +282,224 @@ class Game implements World {
         return chunk.getBlock(lx, y, lz);
     }
 
-    /**
-     * Set block at world coordinates
-     */
-    private setBlock(x: number, y: number, z: number, type: BlockType): void {
+    setBlock(x: number, y: number, z: number, type: BlockType): void {
         if (y < 0 || y >= CHUNK_HEIGHT) return;
         
         const cx = Math.floor(x / CHUNK_SIZE);
         const cz = Math.floor(z / CHUNK_SIZE);
-        const chunk = this.getChunk(cx, cz);
+        const chunk = this.chunks.get(`${cx},${cz}`);
         
-        if (!chunk) return;
+        // Track modification for infinite world persistence
+        this.modifiedBlocks.set(`${x},${y},${z}`, type);
         
-        const lx = (x % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
-        const lz = (z % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
-        
-        chunk.setBlock(lx, y, lz, type);
-        chunk.buildMesh();
-        this.renderer.updateChunk(chunk);
+        if (chunk) {
+            const lx = (x % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
+            const lz = (z % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
+            
+            chunk.setBlock(lx, y, lz, type);
+            chunk.buildMesh();
+            this.renderer.updateChunk(chunk);
+        }
     }
 
-    /**
-     * Raycast into the world
-     */
+    // --- UI & Input ---
+
+    private refreshWorldList() {
+        const list = this.ui.inputs.worldList;
+        if (!list) return;
+        list.innerHTML = '';
+        
+        const saves = TOON.getSaves();
+        if (saves.length === 0) {
+            list.innerHTML = '<p>No saved worlds</p>';
+            return;
+        }
+
+        saves.forEach(key => {
+            const btn = document.createElement('button');
+            btn.textContent = `Load: ${key.replace('world_', '')}`;
+            btn.onclick = () => this.loadGame(key);
+            list.appendChild(btn);
+        });
+    }
+
+    private updateSettingsUI() {
+        if (this.ui.inputs.renderDistance) {
+            this.ui.inputs.renderDistance.value = this.settings.renderDistance.toString();
+        }
+        if (this.ui.inputs.renderDistanceVal) {
+            this.ui.inputs.renderDistanceVal.textContent = this.settings.renderDistance.toString();
+        }
+    }
+
+    private updateHUD() {
+        this.updateStatsUI();
+        this.updateHotbarUI();
+    }
+
+    private updateStatsUI() {
+        if (this.ui.hud.health) {
+            this.ui.hud.health.innerHTML = '';
+            const hearts = Math.ceil(this.player.health / 2);
+            for (let i = 0; i < 10; i++) {
+                const heart = document.createElement('div');
+                heart.className = 'heart';
+                if (i >= hearts) heart.style.opacity = '0.2';
+                this.ui.hud.health.appendChild(heart);
+            }
+        }
+        if (this.ui.hud.food) {
+            this.ui.hud.food.innerHTML = '';
+            const food = Math.ceil(this.player.food / 2);
+            for (let i = 0; i < 10; i++) {
+                const item = document.createElement('div');
+                item.className = 'food';
+                if (i >= food) item.style.opacity = '0.2';
+                this.ui.hud.food.appendChild(item);
+            }
+        }
+        if (this.ui.hud.xp) {
+            this.ui.hud.xp.style.width = `${this.player.xp}%`;
+        }
+    }
+
+    private updateHotbarUI() {
+        if (!this.ui.hud.hotbar) return;
+        this.ui.hud.hotbar.innerHTML = '';
+        this.player.hotbar.forEach((block, index) => {
+            const slot = document.createElement('div');
+            slot.className = `slot ${index === this.player.selectedSlot ? 'active' : ''}`;
+            slot.textContent = BlockType[block].substring(0, 3);
+            this.ui.hud.hotbar?.appendChild(slot);
+        });
+    }
+
+    private setupUIListeners() {
+        // Main Menu
+        document.getElementById('btn-create-world')?.addEventListener('click', () => {
+            const name = this.ui.inputs.newWorldName?.value || 'NewWorld';
+            this.createWorld(name);
+        });
+        document.getElementById('btn-settings-main')?.addEventListener('click', () => this.openSettings(true));
+
+        // Pause Menu
+        document.getElementById('btn-resume')?.addEventListener('click', () => this.setGameState(GameState.PLAYING));
+        document.getElementById('btn-save')?.addEventListener('click', () => this.saveGame());
+        document.getElementById('btn-settings-pause')?.addEventListener('click', () => this.openSettings(false));
+        document.getElementById('btn-quit')?.addEventListener('click', () => {
+            this.saveGame();
+            this.setGameState(GameState.MENU);
+            this.refreshWorldList();
+        });
+
+        // Settings
+        document.getElementById('btn-back-settings')?.addEventListener('click', () => this.closeSettings());
+        this.ui.inputs.renderDistance?.addEventListener('input', (e) => {
+            const val = parseInt((e.target as HTMLInputElement).value);
+            this.settings.renderDistance = val;
+            if (this.ui.inputs.renderDistanceVal) this.ui.inputs.renderDistanceVal.textContent = val.toString();
+        });
+    }
+
+    private setupEventListeners() {
+        // Pointer Lock & Click
+        this.canvas.addEventListener('click', () => {
+            if (this.state === GameState.PLAYING) {
+                this.requestPointerLock();
+            }
+        });
+
+        this.canvas.addEventListener('mousedown', (e) => {
+            if (this.state !== GameState.PLAYING || !this.isPointerLocked) return;
+            this.handleBlockInteraction(e.button);
+        });
+
+        document.addEventListener('pointerlockchange', () => {
+            this.isPointerLocked = document.pointerLockElement === this.canvas;
+            if (!this.isPointerLocked && this.state === GameState.PLAYING) {
+                this.setGameState(GameState.PAUSED);
+            }
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (this.state === GameState.PLAYING && this.isPointerLocked) {
+                this.player.camera.onMouseMove(e.movementX, e.movementY);
+            }
+        });
+
+        // Keys
+        window.addEventListener('keydown', (e) => {
+            if (this.state === GameState.PLAYING) {
+                if (e.key === 'Escape') {
+                    // Handled by pointerlockchange mostly, but redundant check ok
+                } else if (['1','2','3','4','5','6','7','8','9'].includes(e.key)) {
+                     this.keys.add(e.key); // Pass to player for update logic
+                     setTimeout(() => this.updateHotbarUI(), 0);
+                } else {
+                    this.keys.add(e.key.toLowerCase());
+                }
+            } else if (this.state === GameState.PAUSED) {
+                if (e.key === 'Escape') {
+                    this.setGameState(GameState.PLAYING);
+                }
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            this.keys.delete(e.key.toLowerCase());
+            this.keys.delete(e.key); // numeric keys
+        });
+        
+        window.addEventListener('resize', () => {
+            this.resizeCanvas();
+            this.renderer.resize(this.canvas.width, this.canvas.height);
+            this.player.camera.projectionMatrix = Mat4.perspective(
+                Math.PI / 3,
+                this.canvas.width / this.canvas.height,
+                0.1,
+                1000.0
+            );
+        });
+    }
+
+    private requestPointerLock() {
+        this.canvas.requestPointerLock();
+    }
+    
+    private exitPointerLock() {
+        document.exitPointerLock();
+    }
+
+    private handleBlockInteraction(button: number) {
+        const origin = this.player.camera.position;
+        const direction = this.player.camera.getForward();
+        const hit = this.raycast(origin, direction, 5);
+
+        if (hit) {
+            if (button === 0) { // Left: Break
+                this.setBlock(hit.position.x, hit.position.y, hit.position.z, BlockType.AIR);
+            } else if (button === 2) { // Right: Place
+                const placePos = Vec3.add(hit.position, hit.normal);
+                // Simple collision check against player
+                const playerPos = this.player.position;
+                const minX = playerPos.x - 0.3;
+                const maxX = playerPos.x + 0.3;
+                const minY = playerPos.y;
+                const maxY = playerPos.y + 1.8;
+                const minZ = playerPos.z - 0.3;
+                const maxZ = playerPos.z + 0.3;
+                
+                if (!(placePos.x + 1 > minX && placePos.x < maxX &&
+                      placePos.y + 1 > minY && placePos.y < maxY &&
+                      placePos.z + 1 > minZ && placePos.z < maxZ)) {
+                    this.setBlock(placePos.x, placePos.y, placePos.z, this.player.getSelectedBlock());
+                }
+            }
+        }
+    }
+
     private raycast(origin: Vec3, direction: Vec3, maxDistance: number): { position: Vec3, normal: Vec3 } | null {
-        let t = 0;
+         let t = 0;
         let x = Math.floor(origin.x);
         let y = Math.floor(origin.y);
         let z = Math.floor(origin.z);
@@ -252,172 +562,14 @@ class Game implements World {
         return null;
     }
 
-    /**
-     * Save Game Data (TOON)
-     */
-    private saveGame(): void {
-        const data = {
-            player: {
-                position: this.player.position,
-                health: this.player.health,
-                food: this.player.food,
-                xp: this.player.xp,
-                inventory: this.player.hotbar
-            },
-            // Note: Saving chunks is expensive, we'll only save modified ones in a real app
-            // For now, we won't save chunks to keep it simple/fast
-        };
-        TOON.save('world', data);
-        alert('Game Saved (TOON)');
-    }
-
-    /**
-     * Load Game Data (TOON)
-     */
-    private loadGame(): void {
-        const data = TOON.load<any>('world');
-        if (data) {
-            this.player.position = new Vec3(data.player.position.x, data.player.position.y, data.player.position.z);
-            this.player.health = data.player.health;
-            this.player.food = data.player.food;
-            this.player.xp = data.player.xp;
-            this.player.hotbar = data.player.inventory;
-            this.updateStatsUI();
-            this.updateHotbarUI();
-            alert('Game Loaded (TOON)');
-        } else {
-            alert('No save found');
-        }
-    }
-
-    /**
-     * Main game loop
-     */
-    private gameLoop(currentTime: number): void {
-        const deltaTime = Math.min((currentTime - this.lastTime) / 1000, 0.1); // Cap dt
-        this.lastTime = currentTime;
-        
-        // Update player (physics + camera)
-        this.player.update(deltaTime, this, this.keys);
-        
-        // Render
-        this.renderer.render(this.player.camera, Array.from(this.chunks.values()));
-        
-        // Continue loop
-        requestAnimationFrame((time) => this.gameLoop(time));
-    }
-
-    /**
-     * Setup event listeners
-     */
-    private setupEventListeners(): void {
-        // Pointer lock
-        this.canvas.addEventListener('click', () => {
-            this.canvas.requestPointerLock();
-        });
-        
-        // Block interaction
-        this.canvas.addEventListener('mousedown', (event) => {
-            if (!this.isPointerLocked) return;
-
-            const origin = this.player.camera.position;
-            const direction = this.player.camera.getForward();
-            const hit = this.raycast(origin, direction, 5); // 5 block reach
-
-            if (hit) {
-                if (event.button === 0) { // Left click: Remove block
-                    this.setBlock(hit.position.x, hit.position.y, hit.position.z, BlockType.AIR);
-                } else if (event.button === 2) { // Right click: Place block
-                    const placePos = Vec3.add(hit.position, hit.normal);
-                    // Prevent placing block inside player collision box
-                    const playerPos = this.player.position;
-                    // Simple AABB check
-                    const minX = playerPos.x - 0.3;
-                    const maxX = playerPos.x + 0.3;
-                    const minY = playerPos.y;
-                    const maxY = playerPos.y + 1.8;
-                    const minZ = playerPos.z - 0.3;
-                    const maxZ = playerPos.z + 0.3;
-                    
-                    if (!(placePos.x + 1 > minX && placePos.x < maxX &&
-                          placePos.y + 1 > minY && placePos.y < maxY &&
-                          placePos.z + 1 > minZ && placePos.z < maxZ)) {
-                        this.setBlock(placePos.x, placePos.y, placePos.z, this.player.getSelectedBlock());
-                    }
-                }
-            }
-        });
-
-        document.addEventListener('pointerlockchange', () => {
-            this.isPointerLocked = document.pointerLockElement === this.canvas;
-        });
-        
-        // Mouse movement
-        document.addEventListener('mousemove', (event) => {
-            if (this.isPointerLocked) {
-                this.player.camera.onMouseMove(event.movementX, event.movementY);
-            }
-        });
-        
-        // Keyboard input
-        window.addEventListener('keydown', (event) => {
-            this.keys.add(event.key.toLowerCase());
-            
-            // UI updates on key press
-            if (['1','2','3','4','5','6','7','8','9'].includes(event.key)) {
-                setTimeout(() => this.updateHotbarUI(), 0);
-            }
-            
-            // Save/Load
-            if (event.key.toLowerCase() === 'o') this.saveGame();
-            if (event.key.toLowerCase() === 'p') this.loadGame();
-        });
-        
-        window.addEventListener('keyup', (event) => {
-            this.keys.delete(event.key.toLowerCase());
-        });
-        
-        // Window resize
-        window.addEventListener('resize', () => {
-            this.resizeCanvas();
-            this.renderer.resize(this.canvas.width, this.canvas.height);
-            
-            // Update camera projection
-            this.player.camera.projectionMatrix = Mat4.perspective(
-                Math.PI / 3,
-                this.canvas.width / this.canvas.height,
-                0.1,
-                1000.0
-            );
-        });
-    }
-
-    /**
-     * Resize canvas to match window size
-     */
     private resizeCanvas(): void {
         const dpr = window.devicePixelRatio || 1;
         this.canvas.width = window.innerWidth * dpr;
         this.canvas.height = window.innerHeight * dpr;
     }
-
-    /**
-     * Show error message
-     */
-    private showError(message: string): void {
-        const errorDiv = document.getElementById('error');
-        const errorMessage = document.getElementById('error-message');
-        
-        if (errorDiv && errorMessage) {
-            errorMessage.textContent = message;
-            errorDiv.style.display = 'block';
-        }
-        
-        console.error(message);
-    }
 }
 
-// Start the game when DOM is loaded
+// Boot
 window.addEventListener('DOMContentLoaded', async () => {
     try {
         const game = new Game();
