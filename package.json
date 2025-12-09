@@ -1,0 +1,18 @@
+{
+  "name": "agicraft",
+  "version": "0.1.0",
+  "description": "Minecraft-like voxel game with WebGPU",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "serve": "python3 -m http.server 8080"
+  },
+  "keywords": ["voxel", "webgpu", "minecraft", "game"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@webgpu/types": "^0.1.40",
+    "typescript": "^5.3.3"
+  }
+}
