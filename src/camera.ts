@@ -126,6 +126,9 @@ export class Camera {
      * Get combined view-projection matrix
      */
     getViewProjectionMatrix(): Mat4 {
-        return Mat4.multiply(this.projectionMatrix, this.viewMatrix);
+        // Mat4.multiply treats data as Row-Major but the data is Column-Major (standard for WebGPU).
+        // This effectively computes (B * A) stored in Column-Major.
+        // We want Projection * View, so we must call multiply(View, Projection).
+        return Mat4.multiply(this.viewMatrix, this.projectionMatrix);
     }
 }

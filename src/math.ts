@@ -58,13 +58,15 @@ export class Mat4 {
     static perspective(fov: number, aspect: number, near: number, far: number): Mat4 {
         const mat = new Mat4();
         const f = 1.0 / Math.tan(fov / 2);
-        const rangeInv = 1.0 / (near - far);
-
+        
+        // WebGPU uses [0, 1] depth range
+        // Z_ndc = f/(f-n) - nf/(f-n)/z
+        
         mat.data[0] = f / aspect;
         mat.data[5] = f;
-        mat.data[10] = (near + far) * rangeInv;
+        mat.data[10] = far / (near - far); // -f / (f - n)
         mat.data[11] = -1;
-        mat.data[14] = near * far * rangeInv * 2;
+        mat.data[14] = (near * far) / (near - far); // -nf / (f - n)
         mat.data[15] = 0;
 
         return mat;

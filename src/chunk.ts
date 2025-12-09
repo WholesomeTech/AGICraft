@@ -203,6 +203,14 @@ export class Chunk {
         
         // Calculate quad corners
         const corners = this.getQuadCorners(x, y, z, w, h, face);
+
+        // Apply world offset to vertices
+        const worldOffsetX = this.x * CHUNK_SIZE;
+        const worldOffsetZ = this.z * CHUNK_SIZE;
+        for (let i = 0; i < corners.length; i += 3) {
+            corners[i] += worldOffsetX;
+            corners[i + 2] += worldOffsetZ;
+        }
         
         // Add two triangles (6 vertices)
         // Triangle 1: v0, v1, v2
@@ -239,17 +247,17 @@ export class Chunk {
                 ];
             case Face.TOP:
                 return [
-                    offset[0], offset[1] + 1, offset[2],
-                    offset[0] + w, offset[1] + 1, offset[2],
-                    offset[0] + w, offset[1] + 1, offset[2] + h,
                     offset[0], offset[1] + 1, offset[2] + h,
+                    offset[0] + w, offset[1] + 1, offset[2] + h,
+                    offset[0] + w, offset[1] + 1, offset[2],
+                    offset[0], offset[1] + 1, offset[2],
                 ];
             case Face.BOTTOM:
                 return [
-                    offset[0], offset[1], offset[2] + h,
-                    offset[0] + w, offset[1], offset[2] + h,
-                    offset[0] + w, offset[1], offset[2],
                     offset[0], offset[1], offset[2],
+                    offset[0] + w, offset[1], offset[2],
+                    offset[0] + w, offset[1], offset[2] + h,
+                    offset[0], offset[1], offset[2] + h,
                 ];
             case Face.LEFT:
                 return [
