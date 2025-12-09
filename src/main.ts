@@ -3,19 +3,29 @@ import { Chunk } from './chunk.js';
 import { Renderer } from './renderer.js';
 import { Vec3, Mat4 } from './math.js';
 import { BlockType, CHUNK_SIZE, CHUNK_HEIGHT } from './types.js';
+import { Player, World } from './player.js';
+import { TOON } from './toon.js';
 
 /**
  * Main application class
  */
-class Game {
+class Game implements World {
     private canvas: HTMLCanvasElement;
     private renderer: Renderer;
-    private camera: Camera;
     private chunks: Map<string, Chunk> = new Map();
+    private player: Player;
     
     private lastTime: number = 0;
     private isPointerLocked: boolean = false;
-    private selectedBlock: BlockType = BlockType.STONE;
+    private keys: Set<string> = new Set();
+    
+    // UI Elements
+    private ui = {
+        health: document.getElementById('health-container'),
+        food: document.getElementById('food-container'),
+        xp: document.getElementById('xp-bar-fill'),
+        hotbar: document.getElementById('hotbar')
+    };
     
     constructor() {
         this.canvas = document.getElementById('canvas') as HTMLCanvasElement;
@@ -29,17 +39,65 @@ class Game {
         // Initialize renderer
         this.renderer = new Renderer(this.canvas);
         
-        // Initialize camera
-        this.camera = new Camera(
-            new Vec3(0, 10, 20),  // Starting position
-            Math.PI / 3,          // 60 degree FOV
-            this.canvas.width / this.canvas.height,
-            0.1,                  // Near plane
-            1000.0                // Far plane
+        // Initialize player
+        this.player = new Player(
+            new Vec3(0, 50, 0), // Start high up to fall
+            this.canvas.width / this.canvas.height
         );
         
         // Setup event listeners
         this.setupEventListeners();
+        
+        // Initialize UI
+        this.initUI();
+    }
+
+    /**
+     * Initialize UI elements
+     */
+    private initUI(): void {
+        this.updateStatsUI();
+        this.updateHotbarUI();
+    }
+
+    private updateStatsUI(): void {
+        if (this.ui.health) {
+            this.ui.health.innerHTML = '';
+            const hearts = Math.ceil(this.player.health / 2);
+            for (let i = 0; i < 10; i++) {
+                const heart = document.createElement('div');
+                heart.className = 'heart';
+                if (i >= hearts) heart.style.opacity = '0.2';
+                this.ui.health.appendChild(heart);
+            }
+        }
+        
+        if (this.ui.food) {
+            this.ui.food.innerHTML = '';
+            const food = Math.ceil(this.player.food / 2);
+            for (let i = 0; i < 10; i++) {
+                const drumstick = document.createElement('div');
+                drumstick.className = 'food';
+                if (i >= food) drumstick.style.opacity = '0.2';
+                this.ui.food.appendChild(drumstick);
+            }
+        }
+        
+        if (this.ui.xp) {
+            this.ui.xp.style.width = `${this.player.xp}%`;
+        }
+    }
+
+    private updateHotbarUI(): void {
+        if (!this.ui.hotbar) return;
+        this.ui.hotbar.innerHTML = '';
+        
+        this.player.hotbar.forEach((block, index) => {
+            const slot = document.createElement('div');
+            slot.className = `slot ${index === this.player.selectedSlot ? 'active' : ''}`;
+            slot.textContent = BlockType[block].substring(0, 3); // Abbreviate
+            this.ui.hotbar?.appendChild(slot);
+        });
     }
 
     /**
@@ -49,6 +107,11 @@ class Game {
         try {
             await this.renderer.init();
             
+            // Try load last save
+            if (TOON.exists('world')) {
+                console.log('Found save data, use P to load.');
+            }
+
             // Generate initial chunks
             this.generateChunks();
             
@@ -67,7 +130,7 @@ class Game {
      * Generate chunks around origin
      */
     private generateChunks(): void {
-        const renderDistance = 3; // Chunks in each direction
+        const renderDistance = 4;
         
         for (let x = -renderDistance; x <= renderDistance; x++) {
             for (let z = -renderDistance; z <= renderDistance; z++) {
@@ -85,9 +148,9 @@ class Game {
     }
 
     /**
-     * Get block at world coordinates
+     * Get block at world coordinates (World Interface)
      */
-    private getBlock(x: number, y: number, z: number): BlockType {
+    getBlock(x: number, y: number, z: number): BlockType {
         if (y < 0 || y >= CHUNK_HEIGHT) return BlockType.AIR;
         
         const cx = Math.floor(x / CHUNK_SIZE);
@@ -190,17 +253,55 @@ class Game {
     }
 
     /**
+     * Save Game Data (TOON)
+     */
+    private saveGame(): void {
+        const data = {
+            player: {
+                position: this.player.position,
+                health: this.player.health,
+                food: this.player.food,
+                xp: this.player.xp,
+                inventory: this.player.hotbar
+            },
+            // Note: Saving chunks is expensive, we'll only save modified ones in a real app
+            // For now, we won't save chunks to keep it simple/fast
+        };
+        TOON.save('world', data);
+        alert('Game Saved (TOON)');
+    }
+
+    /**
+     * Load Game Data (TOON)
+     */
+    private loadGame(): void {
+        const data = TOON.load<any>('world');
+        if (data) {
+            this.player.position = new Vec3(data.player.position.x, data.player.position.y, data.player.position.z);
+            this.player.health = data.player.health;
+            this.player.food = data.player.food;
+            this.player.xp = data.player.xp;
+            this.player.hotbar = data.player.inventory;
+            this.updateStatsUI();
+            this.updateHotbarUI();
+            alert('Game Loaded (TOON)');
+        } else {
+            alert('No save found');
+        }
+    }
+
+    /**
      * Main game loop
      */
     private gameLoop(currentTime: number): void {
-        const deltaTime = (currentTime - this.lastTime) / 1000; // Convert to seconds
+        const deltaTime = Math.min((currentTime - this.lastTime) / 1000, 0.1); // Cap dt
         this.lastTime = currentTime;
         
-        // Update camera
-        this.camera.update(deltaTime);
+        // Update player (physics + camera)
+        this.player.update(deltaTime, this, this.keys);
         
         // Render
-        this.renderer.render(this.camera, Array.from(this.chunks.values()));
+        this.renderer.render(this.player.camera, Array.from(this.chunks.values()));
         
         // Continue loop
         requestAnimationFrame((time) => this.gameLoop(time));
@@ -219,23 +320,29 @@ class Game {
         this.canvas.addEventListener('mousedown', (event) => {
             if (!this.isPointerLocked) return;
 
-            const origin = this.camera.position;
-            const direction = this.camera.getForward();
-            const hit = this.raycast(origin, direction, 8); // 8 block reach
+            const origin = this.player.camera.position;
+            const direction = this.player.camera.getForward();
+            const hit = this.raycast(origin, direction, 5); // 5 block reach
 
             if (hit) {
                 if (event.button === 0) { // Left click: Remove block
                     this.setBlock(hit.position.x, hit.position.y, hit.position.z, BlockType.AIR);
                 } else if (event.button === 2) { // Right click: Place block
                     const placePos = Vec3.add(hit.position, hit.normal);
-                    // Prevent placing block inside player
-                    const playerPos = this.camera.position;
-                    const distSq = (placePos.x + 0.5 - playerPos.x) ** 2 + 
-                                   (placePos.y + 0.5 - playerPos.y) ** 2 + 
-                                   (placePos.z + 0.5 - playerPos.z) ** 2;
+                    // Prevent placing block inside player collision box
+                    const playerPos = this.player.position;
+                    // Simple AABB check
+                    const minX = playerPos.x - 0.3;
+                    const maxX = playerPos.x + 0.3;
+                    const minY = playerPos.y;
+                    const maxY = playerPos.y + 1.8;
+                    const minZ = playerPos.z - 0.3;
+                    const maxZ = playerPos.z + 0.3;
                     
-                    if (distSq > 1.0) { // Simple distance check
-                        this.setBlock(placePos.x, placePos.y, placePos.z, this.selectedBlock);
+                    if (!(placePos.x + 1 > minX && placePos.x < maxX &&
+                          placePos.y + 1 > minY && placePos.y < maxY &&
+                          placePos.z + 1 > minZ && placePos.z < maxZ)) {
+                        this.setBlock(placePos.x, placePos.y, placePos.z, this.player.getSelectedBlock());
                     }
                 }
             }
@@ -248,17 +355,26 @@ class Game {
         // Mouse movement
         document.addEventListener('mousemove', (event) => {
             if (this.isPointerLocked) {
-                this.camera.onMouseMove(event.movementX, event.movementY);
+                this.player.camera.onMouseMove(event.movementX, event.movementY);
             }
         });
         
         // Keyboard input
         window.addEventListener('keydown', (event) => {
-            this.camera.onKeyDown(event.key);
+            this.keys.add(event.key.toLowerCase());
+            
+            // UI updates on key press
+            if (['1','2','3','4','5','6','7','8','9'].includes(event.key)) {
+                setTimeout(() => this.updateHotbarUI(), 0);
+            }
+            
+            // Save/Load
+            if (event.key.toLowerCase() === 'o') this.saveGame();
+            if (event.key.toLowerCase() === 'p') this.loadGame();
         });
         
         window.addEventListener('keyup', (event) => {
-            this.camera.onKeyUp(event.key);
+            this.keys.delete(event.key.toLowerCase());
         });
         
         // Window resize
@@ -267,7 +383,7 @@ class Game {
             this.renderer.resize(this.canvas.width, this.canvas.height);
             
             // Update camera projection
-            this.camera.projectionMatrix = Mat4.perspective(
+            this.player.camera.projectionMatrix = Mat4.perspective(
                 Math.PI / 3,
                 this.canvas.width / this.canvas.height,
                 0.1,
