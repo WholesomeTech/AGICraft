@@ -2,6 +2,7 @@ import { Camera } from './camera.js';
 import { Chunk } from './chunk.js';
 import { Renderer } from './renderer.js';
 import { Vec3, Mat4 } from './math.js';
+import { BlockType, CHUNK_SIZE, CHUNK_HEIGHT } from './types.js';
 
 /**
  * Main application class
@@ -10,10 +11,11 @@ class Game {
     private canvas: HTMLCanvasElement;
     private renderer: Renderer;
     private camera: Camera;
-    private chunks: Chunk[] = [];
+    private chunks: Map<string, Chunk> = new Map();
     
     private lastTime: number = 0;
     private isPointerLocked: boolean = false;
+    private selectedBlock: BlockType = BlockType.STONE;
     
     constructor() {
         this.canvas = document.getElementById('canvas') as HTMLCanvasElement;
@@ -70,9 +72,121 @@ class Game {
         for (let x = -renderDistance; x <= renderDistance; x++) {
             for (let z = -renderDistance; z <= renderDistance; z++) {
                 const chunk = new Chunk(x, z);
-                this.chunks.push(chunk);
+                this.chunks.set(`${x},${z}`, chunk);
             }
         }
+    }
+
+    /**
+     * Get chunk at chunk coordinates
+     */
+    private getChunk(cx: number, cz: number): Chunk | undefined {
+        return this.chunks.get(`${cx},${cz}`);
+    }
+
+    /**
+     * Get block at world coordinates
+     */
+    private getBlock(x: number, y: number, z: number): BlockType {
+        if (y < 0 || y >= CHUNK_HEIGHT) return BlockType.AIR;
+        
+        const cx = Math.floor(x / CHUNK_SIZE);
+        const cz = Math.floor(z / CHUNK_SIZE);
+        const chunk = this.getChunk(cx, cz);
+        
+        if (!chunk) return BlockType.AIR;
+        
+        const lx = (x % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
+        const lz = (z % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
+        
+        return chunk.getBlock(lx, y, lz);
+    }
+
+    /**
+     * Set block at world coordinates
+     */
+    private setBlock(x: number, y: number, z: number, type: BlockType): void {
+        if (y < 0 || y >= CHUNK_HEIGHT) return;
+        
+        const cx = Math.floor(x / CHUNK_SIZE);
+        const cz = Math.floor(z / CHUNK_SIZE);
+        const chunk = this.getChunk(cx, cz);
+        
+        if (!chunk) return;
+        
+        const lx = (x % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
+        const lz = (z % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
+        
+        chunk.setBlock(lx, y, lz, type);
+        chunk.buildMesh();
+        this.renderer.updateChunk(chunk);
+    }
+
+    /**
+     * Raycast into the world
+     */
+    private raycast(origin: Vec3, direction: Vec3, maxDistance: number): { position: Vec3, normal: Vec3 } | null {
+        let t = 0;
+        let x = Math.floor(origin.x);
+        let y = Math.floor(origin.y);
+        let z = Math.floor(origin.z);
+
+        const stepX = direction.x > 0 ? 1 : -1;
+        const stepY = direction.y > 0 ? 1 : -1;
+        const stepZ = direction.z > 0 ? 1 : -1;
+
+        const deltaX = Math.abs(1 / direction.x);
+        const deltaY = Math.abs(1 / direction.y);
+        const deltaZ = Math.abs(1 / direction.z);
+
+        const distX = stepX > 0 ? (Math.floor(origin.x) + 1 - origin.x) : (origin.x - Math.floor(origin.x));
+        const distY = stepY > 0 ? (Math.floor(origin.y) + 1 - origin.y) : (origin.y - Math.floor(origin.y));
+        const distZ = stepZ > 0 ? (Math.floor(origin.z) + 1 - origin.z) : (origin.z - Math.floor(origin.z));
+
+        let maxX = distX * deltaX;
+        let maxY = distY * deltaY;
+        let maxZ = distZ * deltaZ;
+        
+        let normal = new Vec3(0, 0, 0); 
+
+        while (t <= maxDistance) {
+            // Check if current block is solid
+            if (this.getBlock(x, y, z) !== BlockType.AIR) {
+                return {
+                    position: new Vec3(x, y, z),
+                    normal: normal
+                };
+            }
+
+            // Move to next block
+            if (maxX < maxY) {
+                if (maxX < maxZ) {
+                    x += stepX;
+                    t = maxX;
+                    maxX += deltaX;
+                    normal = new Vec3(-stepX, 0, 0);
+                } else {
+                    z += stepZ;
+                    t = maxZ;
+                    maxZ += deltaZ;
+                    normal = new Vec3(0, 0, -stepZ);
+                }
+            } else {
+                if (maxY < maxZ) {
+                    y += stepY;
+                    t = maxY;
+                    maxY += deltaY;
+                    normal = new Vec3(0, -stepY, 0);
+                } else {
+                    z += stepZ;
+                    t = maxZ;
+                    maxZ += deltaZ;
+                    normal = new Vec3(0, 0, -stepZ);
+                }
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -86,7 +200,7 @@ class Game {
         this.camera.update(deltaTime);
         
         // Render
-        this.renderer.render(this.camera, this.chunks);
+        this.renderer.render(this.camera, Array.from(this.chunks.values()));
         
         // Continue loop
         requestAnimationFrame((time) => this.gameLoop(time));
@@ -101,6 +215,32 @@ class Game {
             this.canvas.requestPointerLock();
         });
         
+        // Block interaction
+        this.canvas.addEventListener('mousedown', (event) => {
+            if (!this.isPointerLocked) return;
+
+            const origin = this.camera.position;
+            const direction = this.camera.getForward();
+            const hit = this.raycast(origin, direction, 8); // 8 block reach
+
+            if (hit) {
+                if (event.button === 0) { // Left click: Remove block
+                    this.setBlock(hit.position.x, hit.position.y, hit.position.z, BlockType.AIR);
+                } else if (event.button === 2) { // Right click: Place block
+                    const placePos = Vec3.add(hit.position, hit.normal);
+                    // Prevent placing block inside player
+                    const playerPos = this.camera.position;
+                    const distSq = (placePos.x + 0.5 - playerPos.x) ** 2 + 
+                                   (placePos.y + 0.5 - playerPos.y) ** 2 + 
+                                   (placePos.z + 0.5 - playerPos.z) ** 2;
+                    
+                    if (distSq > 1.0) { // Simple distance check
+                        this.setBlock(placePos.x, placePos.y, placePos.z, this.selectedBlock);
+                    }
+                }
+            }
+        });
+
         document.addEventListener('pointerlockchange', () => {
             this.isPointerLocked = document.pointerLockElement === this.canvas;
         });
