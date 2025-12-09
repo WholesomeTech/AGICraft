@@ -29,6 +29,10 @@ class Game implements World {
     private isPointerLocked: boolean = false;
     private keys: Set<string> = new Set();
     
+    // Time & Lighting
+    private timeOfDay: number = 600; // 0-2400 (starts at 6:00 AM)
+    private readonly dayDuration: number = 600; // seconds for full 24h cycle
+    
     // Settings
     private settings = {
         renderDistance: 4
@@ -273,14 +277,79 @@ class Game implements World {
         this.lastTime = currentTime;
 
         if (this.state === GameState.PLAYING) {
+            // Update Time
+            this.timeOfDay = (this.timeOfDay + (deltaTime / this.dayDuration) * 2400) % 2400;
+
             // Update Logic
             this.player.update(deltaTime, this, this.keys);
             this.updateChunks();
         }
 
+        // Calculate Lighting
+        const t = this.timeOfDay / 2400; // 0.0 to 1.0
+        const angle = (t - 0.25) * Math.PI * 2; // Noon at 0.5 (angle PI/2) -> No, Noon at 0.5 means top? 
+        // 0.0 = Midnight, 0.25 = Sunrise, 0.5 = Noon, 0.75 = Sunset
+        // We want sun to rise at east (+X?), set at west (-X?)
+        // Let's say: 
+        // angle = 0 -> Sunrise
+        // angle = PI/2 -> Noon
+        // angle = PI -> Sunset
+        // angle = 3PI/2 -> Midnight
+        
+        // Actually, let's map t:
+        // 600 (0.25) -> Rise
+        // 1200 (0.5) -> Noon
+        // 1800 (0.75) -> Set
+        // 0/2400 -> Midnight
+        
+        const sunAngle = (t - 0.25) * Math.PI * 2; // -PI/2 at midnight, 0 at rise, PI/2 at noon... wait
+        // t=0.25 -> angle=0 -> cos=1, sin=0 (Rise at X)
+        // t=0.5 -> angle=PI/2 -> cos=0, sin=1 (Noon at Y)
+        // t=0.75 -> angle=PI -> cos=-1, sin=0 (Set at -X)
+        // t=0 -> angle=-PI/2 -> cos=0, sin=-1 (Midnight at -Y)
+        
+        const lightDir = {
+            x: Math.cos(sunAngle),
+            y: Math.sin(sunAngle),
+            z: 0.2 // Slight offset
+        };
+        
+        // Colors
+        let ambient = { r: 0.1, g: 0.1, b: 0.15 };
+        let sun = { r: 0, g: 0, b: 0 };
+        let sky = { r: 0, g: 0, b: 0 };
+        
+        if (t > 0.2 && t < 0.8) { // Dayish
+            // Simple interpolation could be better, but hardcoded phases are easier for now
+            if (t < 0.25 || t > 0.75) { // Twilight
+                const factor = t < 0.25 ? (t - 0.2) / 0.05 : (0.8 - t) / 0.05;
+                // Sunrise/Sunset
+                ambient = { r: 0.3 * factor, g: 0.2 * factor, b: 0.3 * factor };
+                sun = { r: 1.0 * factor, g: 0.5 * factor, b: 0.2 * factor };
+                sky = { r: 0.8 * factor, g: 0.5 * factor, b: 0.3 * factor }; // Orange sky
+            } else {
+                // Day
+                ambient = { r: 0.4, g: 0.4, b: 0.4 };
+                sun = { r: 1.0, g: 0.95, b: 0.9 };
+                sky = { r: 0.5, g: 0.7, b: 1.0 }; // Blue sky
+            }
+        } else {
+            // Night
+            ambient = { r: 0.05, g: 0.05, b: 0.1 };
+            sun = { r: 0.1, g: 0.1, b: 0.2 }; // Moonlight
+            sky = { r: 0.05, g: 0.05, b: 0.1 };
+        }
+
         // Render (always render if possible, even if paused)
         // If paused, maybe apply a darkening filter or just stop updates
-        this.renderer.render(this.player.camera, Array.from(this.chunks.values()));
+        this.renderer.render(
+            this.player.camera, 
+            Array.from(this.chunks.values()),
+            lightDir,
+            ambient,
+            sun,
+            sky
+        );
 
         requestAnimationFrame((time) => this.gameLoop(time));
     }

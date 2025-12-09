@@ -212,7 +212,7 @@ export class Chunk {
         }
         
         this.vertices = new Float32Array(vertices);
-        this.vertexCount = vertices.length / 6; // position(3) + color(3)
+        this.vertexCount = vertices.length / 9; // position(3) + normal(3) + color(3)
         this.isDirty = false;
     }
 
@@ -233,11 +233,10 @@ export class Chunk {
         const color = BLOCK_COLORS[blockType];
         const [nx, ny, nz] = FACE_NORMALS[face];
         
-        // Calculate lighting based on face normal (simple ambient occlusion)
-        const brightness = 0.5 + (ny * 0.3) + 0.2;
-        const r = color[0] * brightness;
-        const g = color[1] * brightness;
-        const b = color[2] * brightness;
+        // Raw color (lighting handled in shader)
+        const r = color[0];
+        const g = color[1];
+        const b = color[2];
         
         // Get axis vectors for this face
         const [du, dv] = this.getFaceAxes(face);
@@ -254,15 +253,20 @@ export class Chunk {
         }
         
         // Add two triangles (6 vertices)
+        // Format: pos(3) + normal(3) + color(3)
         // Triangle 1: v0, v1, v2
-        vertices.push(corners[0], corners[1], corners[2], r, g, b);
-        vertices.push(corners[3], corners[4], corners[5], r, g, b);
-        vertices.push(corners[6], corners[7], corners[8], r, g, b);
+        vertices.push(
+            corners[0], corners[1], corners[2], nx, ny, nz, r, g, b,
+            corners[3], corners[4], corners[5], nx, ny, nz, r, g, b,
+            corners[6], corners[7], corners[8], nx, ny, nz, r, g, b
+        );
         
         // Triangle 2: v0, v2, v3
-        vertices.push(corners[0], corners[1], corners[2], r, g, b);
-        vertices.push(corners[6], corners[7], corners[8], r, g, b);
-        vertices.push(corners[9], corners[10], corners[11], r, g, b);
+        vertices.push(
+            corners[0], corners[1], corners[2], nx, ny, nz, r, g, b,
+            corners[6], corners[7], corners[8], nx, ny, nz, r, g, b,
+            corners[9], corners[10], corners[11], nx, ny, nz, r, g, b
+        );
     }
 
     /**

@@ -48,9 +48,11 @@ export class Renderer {
         // Create depth texture
         this.createDepthTexture();
 
-        // Create uniform buffer for view-projection matrix
+        // Create uniform buffer for view-projection matrix and lighting
+        // 64 (mat4) + 16 (lightDir) + 16 (ambient) + 16 (sun) = 112 bytes
+        // Aligned to 16 bytes
         this.uniformBuffer = this.device.createBuffer({
-            size: 64, // 4x4 matrix = 16 floats = 64 bytes
+            size: 112, 
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
 
@@ -58,7 +60,7 @@ export class Renderer {
         const bindGroupLayout = this.device.createBindGroupLayout({
             entries: [{
                 binding: 0,
-                visibility: GPUShaderStage.VERTEX,
+                visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
                 buffer: { type: 'uniform' },
             }],
         });
@@ -87,7 +89,7 @@ export class Renderer {
                 module: shaderModule,
                 entryPoint: 'vertex_main',
                 buffers: [{
-                    arrayStride: 24, // 6 floats * 4 bytes: position(3) + color(3)
+                    arrayStride: 36, // 9 floats * 4 bytes: position(3) + normal(3) + color(3)
                     attributes: [
                         {
                             // position
@@ -96,10 +98,16 @@ export class Renderer {
                             shaderLocation: 0,
                         },
                         {
-                            // color
+                            // normal
                             format: 'float32x3',
                             offset: 12,
                             shaderLocation: 1,
+                        },
+                        {
+                            // color
+                            format: 'float32x3',
+                            offset: 24,
+                            shaderLocation: 2,
                         },
                     ],
                 }],
@@ -184,18 +192,42 @@ export class Renderer {
     /**
      * Render frame
      */
-    render(camera: Camera, chunks: Chunk[]): void {
-        // Update uniform buffer with view-projection matrix
+    render(
+        camera: Camera, 
+        chunks: Chunk[], 
+        lightDir: {x: number, y: number, z: number},
+        ambientColor: {r: number, g: number, b: number},
+        sunColor: {r: number, g: number, b: number},
+        skyColor: {r: number, g: number, b: number}
+    ): void {
+        // Update uniform buffer
         const vpMatrix = camera.getViewProjectionMatrix();
-        this.device.queue.writeBuffer(this.uniformBuffer, 0, vpMatrix.data.buffer, vpMatrix.data.byteOffset, vpMatrix.data.byteLength);
+        
+        // Data layout:
+        // Mat4 viewProj (64)
+        // Vec3 lightDir + padding (16)
+        // Vec3 ambient + padding (16)
+        // Vec3 sunColor + padding (16)
+        
+        const uniformData = new Float32Array(28); // 16 + 4 + 4 + 4
+        uniformData.set(vpMatrix.data, 0); // 0-15
+        
+        uniformData[16] = lightDir.x;
+        uniformData[17] = lightDir.y;
+        uniformData[18] = lightDir.z;
+        uniformData[19] = 0; // pad
 
-        // Update chunk meshes if dirty
-        for (const chunk of chunks) {
-            if (chunk.isDirty) {
-                chunk.buildMesh();
-                this.updateChunk(chunk);
-            }
-        }
+        uniformData[20] = ambientColor.r;
+        uniformData[21] = ambientColor.g;
+        uniformData[22] = ambientColor.b;
+        uniformData[23] = 0; // pad
+
+        uniformData[24] = sunColor.r;
+        uniformData[25] = sunColor.g;
+        uniformData[26] = sunColor.b;
+        uniformData[27] = 0; // pad
+        
+        this.device.queue.writeBuffer(this.uniformBuffer, 0, uniformData.buffer, uniformData.byteOffset, uniformData.byteLength);
 
         // Create command encoder
         const encoder = this.device.createCommandEncoder();
@@ -205,7 +237,7 @@ export class Renderer {
         const renderPass = encoder.beginRenderPass({
             colorAttachments: [{
                 view: textureView,
-                clearValue: { r: 0.5, g: 0.7, b: 1.0, a: 1.0 }, // Sky blue
+                clearValue: { r: skyColor.r, g: skyColor.g, b: skyColor.b, a: 1.0 },
                 loadOp: 'clear',
                 storeOp: 'store',
             }],
@@ -244,31 +276,51 @@ export class Renderer {
         return `
 struct Uniforms {
     viewProjection: mat4x4<f32>,
+    lightDir: vec4<f32>, // vec3 + padding
+    ambientColor: vec4<f32>, // vec3 + padding
+    sunColor: vec4<f32>, // vec3 + padding
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
-    @location(1) color: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec3<f32>,
 }
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) color: vec3<f32>,
+    @location(0) normal: vec3<f32>,
+    @location(1) color: vec3<f32>,
 }
 
 @vertex
 fn vertex_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     output.position = uniforms.viewProjection * vec4<f32>(input.position, 1.0);
+    output.normal = input.normal;
     output.color = input.color;
     return output;
 }
 
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(input.color, 1.0);
+    // Normalize vectors
+    let normal = normalize(input.normal);
+    let lightDir = normalize(uniforms.lightDir.xyz);
+    
+    // Diffuse lighting (Lambert)
+    // max(dot(N, L), 0.0)
+    let diffuse = max(dot(normal, lightDir), 0.0);
+    
+    // Combine lighting
+    let lighting = uniforms.ambientColor.rgb + (diffuse * uniforms.sunColor.rgb);
+    
+    // Apply to object color
+    let finalColor = input.color * lighting;
+    
+    return vec4<f32>(finalColor, 1.0);
 }
 `;
     }
